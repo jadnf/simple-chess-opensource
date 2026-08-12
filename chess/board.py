@@ -27,6 +27,8 @@ class Board:
         self.variant = variant
         self.initial_king_col = 4
         self.initial_rook_cols: Tuple[int, int] = (0, 7)
+        # Cached king pieces per color, kept fresh lazily by is_in_check
+        self._kings: dict = {'white': None, 'black': None}
         self._initialize_board()
     
     def _initialize_board(self):
@@ -218,23 +220,39 @@ class Board:
         Returns:
             True if move is safe (doesn't leave king in check)
         """
-        # Create a temporary board to test the move
-        temp_board = self.copy()
-        piece = temp_board.get_piece(start_row, start_col)
+        # Make the move in place, test for check, then undo. This runs for
+        # every candidate move during move generation, so it must be cheap
+        # (a full board copy here dominated the AI's search time).
+        piece = self.grid[start_row][start_col]
         if piece is None:
             return False
         
-        # Make the move on temp board
-        temp_board.grid[start_row][start_col] = None
-        temp_board.grid[end_row][end_col] = piece
-        piece.set_position(end_row, end_col)
+        captured = self.grid[end_row][end_col]
+        self.grid[start_row][start_col] = None
+        self.grid[end_row][end_col] = piece
+        piece.row, piece.col = end_row, end_col
         
-        # Check if king is in check after move
-        return not temp_board.is_in_check(color)
+        try:
+            return not self.is_in_check(color)
+        finally:
+            self.grid[start_row][start_col] = piece
+            self.grid[end_row][end_col] = captured
+            piece.row, piece.col = start_row, start_col
+    
+    _KNIGHT_OFFSETS = ((-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                       (1, -2), (1, 2), (2, -1), (2, 1))
+    _KING_OFFSETS = ((-1, -1), (-1, 0), (-1, 1), (0, -1),
+                     (0, 1), (1, -1), (1, 0), (1, 1))
+    _ORTHOGONAL_DIRS = ((0, 1), (0, -1), (1, 0), (-1, 0))
+    _DIAGONAL_DIRS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
     
     def is_square_attacked(self, row: int, col: int, by_color: str) -> bool:
         """
         Check if a square is attacked by opponent pieces.
+        
+        Works outward from the target square (reverse attack detection)
+        instead of generating every opponent piece's move list, since this
+        is one of the hottest functions in the AI search.
         
         Args:
             row, col: Square to check
@@ -244,98 +262,55 @@ class Board:
             True if square is attacked by opponent
         """
         opponent_color = 'black' if by_color == 'white' else 'white'
+        grid = self.grid
         
-        # Check all opponent pieces
-        for r in range(8):
-            for c in range(8):
-                piece = self.get_piece(r, c)
-                if piece and piece.color == opponent_color:
-                    # Get raw moves without check filtering (for attack detection)
-                    raw_moves = self._get_raw_moves(piece)
-                    if (row, col) in raw_moves:
+        # Knight attacks
+        for dr, dc in self._KNIGHT_OFFSETS:
+            r, c = row + dr, col + dc
+            if 0 <= r < 8 and 0 <= c < 8:
+                piece = grid[r][c]
+                if (piece is not None and piece.color == opponent_color and
+                        piece.piece_type == 'knight'):
+                    return True
+        
+        # Pawn attacks: an opponent pawn one row "behind" the square
+        # (relative to its movement direction) on an adjacent file
+        pawn_dir = -1 if opponent_color == 'white' else 1
+        r = row - pawn_dir
+        if 0 <= r < 8:
+            for dc in (-1, 1):
+                c = col + dc
+                if 0 <= c < 8:
+                    piece = grid[r][c]
+                    if (piece is not None and piece.color == opponent_color and
+                            piece.piece_type == 'pawn'):
                         return True
         
+        # King attacks (adjacent squares)
+        for dr, dc in self._KING_OFFSETS:
+            r, c = row + dr, col + dc
+            if 0 <= r < 8 and 0 <= c < 8:
+                piece = grid[r][c]
+                if (piece is not None and piece.color == opponent_color and
+                        piece.piece_type == 'king'):
+                    return True
+        
+        # Sliding attacks: walk each ray until the first piece
+        for dirs, attackers in ((self._ORTHOGONAL_DIRS, ('rook', 'queen')),
+                                (self._DIAGONAL_DIRS, ('bishop', 'queen'))):
+            for dr, dc in dirs:
+                r, c = row + dr, col + dc
+                while 0 <= r < 8 and 0 <= c < 8:
+                    piece = grid[r][c]
+                    if piece is not None:
+                        if (piece.color == opponent_color and
+                                piece.piece_type in attackers):
+                            return True
+                        break
+                    r += dr
+                    c += dc
+        
         return False
-    
-    def _get_raw_moves(self, piece: Piece) -> List[Tuple[int, int]]:
-        """Get moves without check filtering (for attack detection)."""
-        moves = []
-        
-        if piece.piece_type == 'pawn':
-            direction = -1 if piece.color == 'white' else 1
-            # Diagonal captures
-            for col_offset in [-1, 1]:
-                new_col = piece.col + col_offset
-                new_row = piece.row + direction
-                if 0 <= new_row < 8 and 0 <= new_col < 8:
-                    moves.append((new_row, new_col))
-        
-        elif piece.piece_type == 'rook':
-            directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-            for dr, dc in directions:
-                for i in range(1, 8):
-                    new_row = piece.row + (dr * i)
-                    new_col = piece.col + (dc * i)
-                    if not (0 <= new_row < 8 and 0 <= new_col < 8):
-                        break
-                    moves.append((new_row, new_col))
-                    target = self.get_piece(new_row, new_col)
-                    if target is not None:
-                        break
-        
-        elif piece.piece_type == 'knight':
-            knight_moves = [
-                (-2, -1), (-2, 1), (-1, -2), (-1, 2),
-                (1, -2), (1, 2), (2, -1), (2, 1)
-            ]
-            for dr, dc in knight_moves:
-                new_row = piece.row + dr
-                new_col = piece.col + dc
-                if 0 <= new_row < 8 and 0 <= new_col < 8:
-                    moves.append((new_row, new_col))
-        
-        elif piece.piece_type == 'bishop':
-            directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
-            for dr, dc in directions:
-                for i in range(1, 8):
-                    new_row = piece.row + (dr * i)
-                    new_col = piece.col + (dc * i)
-                    if not (0 <= new_row < 8 and 0 <= new_col < 8):
-                        break
-                    moves.append((new_row, new_col))
-                    target = self.get_piece(new_row, new_col)
-                    if target is not None:
-                        break
-        
-        elif piece.piece_type == 'queen':
-            directions = [
-                (0, 1), (0, -1), (1, 0), (-1, 0),
-                (1, 1), (1, -1), (-1, 1), (-1, -1)
-            ]
-            for dr, dc in directions:
-                for i in range(1, 8):
-                    new_row = piece.row + (dr * i)
-                    new_col = piece.col + (dc * i)
-                    if not (0 <= new_row < 8 and 0 <= new_col < 8):
-                        break
-                    moves.append((new_row, new_col))
-                    target = self.get_piece(new_row, new_col)
-                    if target is not None:
-                        break
-        
-        elif piece.piece_type == 'king':
-            king_moves = [
-                (-1, -1), (-1, 0), (-1, 1),
-                (0, -1),           (0, 1),
-                (1, -1),  (1, 0),  (1, 1)
-            ]
-            for dr, dc in king_moves:
-                new_row = piece.row + dr
-                new_col = piece.col + dc
-                if 0 <= new_row < 8 and 0 <= new_col < 8:
-                    moves.append((new_row, new_col))
-        
-        return moves
     
     def is_in_check(self, color: str) -> bool:
         """
@@ -347,16 +322,21 @@ class Board:
         Returns:
             True if king is in check
         """
-        # Find the king
-        king = None
-        for row in range(8):
-            for col in range(8):
-                piece = self.get_piece(row, col)
-                if piece and piece.piece_type == 'king' and piece.color == color:
-                    king = piece
+        # Use the cached king piece if it is still on the board at its
+        # recorded square; otherwise re-scan (e.g. after a capture in a
+        # speculative search line)
+        king = self._kings.get(color)
+        if king is None or self.grid[king.row][king.col] is not king:
+            king = None
+            for row_pieces in self.grid:
+                for piece in row_pieces:
+                    if (piece is not None and piece.piece_type == 'king' and
+                            piece.color == color):
+                        king = piece
+                        break
+                if king:
                     break
-            if king:
-                break
+            self._kings[color] = king
         
         if king is None:
             return False
@@ -422,16 +402,23 @@ class Board:
         """Create a deep copy of the board."""
         new_board = Board.__new__(Board)  # Create instance without calling __init__
         new_board.grid = [[None for _ in range(8)] for _ in range(8)]
+        new_board._kings = {'white': None, 'black': None}
         
         # Copy all pieces
         for row in range(8):
             for col in range(8):
-                piece = self.get_piece(row, col)
+                piece = self.grid[row][col]
                 if piece:
-                    new_board.grid[row][col] = piece.copy()
+                    new_piece = piece.copy()
+                    new_board.grid[row][col] = new_piece
+                    if new_piece.piece_type == 'king':
+                        new_board._kings[new_piece.color] = new_piece
         
         new_board.current_turn = self.current_turn
-        new_board.move_history = self.move_history.copy()
+        # Copies are only used for speculative search/simulation, so the
+        # move history (which is never read) is not carried over; copying
+        # it made every copy slower as the game grew longer
+        new_board.move_history = []
         new_board.en_passant_target = self.en_passant_target
         new_board.variant = self.variant
         new_board.initial_king_col = self.initial_king_col

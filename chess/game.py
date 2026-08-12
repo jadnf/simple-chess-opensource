@@ -4,6 +4,8 @@ Author: Sepehr Bayat | Open Source Chess MVP
 Game class for managing the main game loop, input handling, and rendering.
 """
 
+import threading
+
 import pygame
 from typing import Optional, Tuple, List
 from chess.board import Board
@@ -28,6 +30,7 @@ class Game:
         pygame.display.set_caption("Chess MVP - Sepehr Bayat")
         
         # Initialize font
+        self.font_title = pygame.font.Font(None, 72)
         self.font_large = pygame.font.Font(None, 36)
         self.font_medium = pygame.font.Font(None, 28)
         self.font_small = pygame.font.Font(None, 24)
@@ -43,6 +46,9 @@ class Game:
         self.last_move_score: Optional[int] = None
         self.last_move_color: Optional[str] = None
         self.game_status: str = "Playing"
+        self.game_over: bool = False
+        self.game_result: str = ""       # Win screen title, e.g. "White Wins!"
+        self.game_result_detail: str = ""  # Win screen subtitle, e.g. "by checkmate"
         
         # Game mode
         self.game_mode: Optional[str] = None
@@ -50,6 +56,8 @@ class Game:
         self.ai_white: Optional[ChessAI] = None
         self.ai_black: Optional[ChessAI] = None
         self.ai_thinking = False
+        # Result produced by the AI worker thread, applied on the main loop
+        self._ai_result: Optional[Tuple] = None
         
         # Clock for FPS control
         self.clock = pygame.time.Clock()
@@ -109,8 +117,14 @@ class Game:
             return True
         return False
     
-    def _make_ai_move(self):
-        """Make a move for the AI player."""
+    def _start_ai_move(self):
+        """
+        Start computing the AI's move on a background thread.
+        
+        Running the search off the main thread keeps the window responsive
+        (rendering and pumping events) during long searches; otherwise
+        Windows flags the app as "Not Responding".
+        """
         if self.ai_thinking:
             return
         
@@ -119,13 +133,25 @@ class Game:
             return
         
         self.ai_thinking = True
+        # The search must run on a snapshot: move-safety tests temporarily
+        # mutate the board, which would corrupt rendering on the main thread
+        board_snapshot = self.board.copy()
+        move_color = self.board.current_turn
         
-        # Get best move from AI
-        best_move = ai_player.get_best_move(self.board, self.board.current_turn)
+        def worker():
+            best_move = ai_player.get_best_move(board_snapshot, move_color)
+            self._ai_result = (best_move, move_color)
         
-        if best_move:
+        threading.Thread(target=worker, daemon=True).start()
+    
+    def _apply_ai_move(self):
+        """Apply a finished AI move (called from the main loop)."""
+        best_move, move_color = self._ai_result
+        self._ai_result = None
+        self.ai_thinking = False
+        
+        if best_move and move_color == self.board.current_turn:
             start, end = best_move
-            move_color = self.board.current_turn
             move = (start, end)
             
             # Evaluate the move
@@ -137,8 +163,6 @@ class Game:
             # Make the move
             self.board.make_move(start, end)
             self._update_game_status()
-        
-        self.ai_thinking = False
     
     def handle_click(self, pos: Tuple[int, int]):
         """
@@ -147,8 +171,8 @@ class Game:
         Args:
             pos: (x, y) mouse position
         """
-        # Don't handle clicks if it's AI's turn
-        if self._is_ai_turn():
+        # Don't handle clicks if the game is over or it's AI's turn
+        if self.game_over or self._is_ai_turn():
             return
         
         x, y = pos
@@ -203,10 +227,19 @@ class Game:
         """Update the game status (check, checkmate, stalemate)."""
         if self.board.is_checkmate('white'):
             self.game_status = "Checkmate! Black Wins"
+            self.game_over = True
+            self.game_result = "Black Wins!"
+            self.game_result_detail = "by checkmate"
         elif self.board.is_checkmate('black'):
             self.game_status = "Checkmate! White Wins"
+            self.game_over = True
+            self.game_result = "White Wins!"
+            self.game_result_detail = "by checkmate"
         elif self.board.is_stalemate(self.board.current_turn):
             self.game_status = "Stalemate - Draw"
+            self.game_over = True
+            self.game_result = "Draw"
+            self.game_result_detail = "by stalemate"
         elif self.board.is_in_check(self.board.current_turn):
             self.game_status = f"{self.board.current_turn.capitalize()} in Check"
         else:
@@ -228,6 +261,10 @@ class Game:
         
         # Draw UI panel
         self._draw_ui_panel()
+        
+        # Draw win screen overlay
+        if self.game_over:
+            self._draw_game_over()
         
         pygame.display.flip()
     
@@ -293,6 +330,25 @@ class Game:
                 move_surface.set_alpha(100)
                 move_surface.fill(VALID_MOVE_HIGHLIGHT)
                 self.screen.blit(move_surface, (move_x, move_y))
+    
+    def _draw_game_over(self):
+        """Draw the win screen overlay on top of the board."""
+        overlay = pygame.Surface((BOARD_SIZE, BOARD_SIZE))
+        overlay.set_alpha(180)
+        overlay.fill(BLACK)
+        self.screen.blit(overlay, (0, 0))
+        
+        center_x = BOARD_SIZE // 2
+        center_y = BOARD_SIZE // 2
+        
+        title = self.font_title.render(self.game_result, True, WHITE)
+        self.screen.blit(title, title.get_rect(center=(center_x, center_y - 40)))
+        
+        detail = self.font_large.render(self.game_result_detail, True, WHITE)
+        self.screen.blit(detail, detail.get_rect(center=(center_x, center_y + 15)))
+        
+        hint = self.font_small.render("Press ESC to quit", True, WHITE)
+        self.screen.blit(hint, hint.get_rect(center=(center_x, center_y + 60)))
     
     def _draw_ui_panel(self):
         """Draw the UI panel with game information."""
@@ -375,7 +431,13 @@ class Game:
         y_offset += 20
         
         # Instructions
-        if self._is_ai_turn():
+        if self.game_over:
+            instructions = [
+                "Game over",
+                "",
+                "Press ESC to quit"
+            ]
+        elif self._is_ai_turn():
             instructions = [
                 "Waiting for AI...",
                 "",
@@ -418,13 +480,18 @@ class Game:
                     if event.button == 1:  # Left click
                         self.handle_click(event.pos)
             
-            # Handle AI moves
-            if self._is_ai_turn() and not self.ai_thinking:
+            # Handle AI moves (none once the game is over)
+            if self._ai_result is not None:
+                self._apply_ai_move()
+                ai_move_timer = 0
+            elif self.game_over:
+                ai_move_timer = 0
+            elif self._is_ai_turn() and not self.ai_thinking:
                 ai_move_timer += 1
                 if ai_move_timer >= ai_move_delay:
-                    self._make_ai_move()
+                    self._start_ai_move()
                     ai_move_timer = 0
-            else:
+            elif not self._is_ai_turn():
                 ai_move_timer = 0
             
             self.draw()
