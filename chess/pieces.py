@@ -290,13 +290,21 @@ class King(Piece):
                     moves.append((new_row, new_col))
         
         # Castling
+        castling_moves: List[Tuple[int, int]] = []
         if not self.has_moved and not board.is_in_check(self.color):
-            # Kingside castling
-            if self._can_castle_kingside(board):
-                moves.append((self.row, self.col + 2))
-            # Queenside castling
-            if self._can_castle_queenside(board):
-                moves.append((self.row, self.col - 2))
+            if board.variant == 'chess960':
+                # Chess960 castling is entered as the king moving onto its
+                # own rook's square
+                for rook_col in board.initial_rook_cols:
+                    if self._can_castle_960(board, rook_col):
+                        castling_moves.append((self.row, rook_col))
+            else:
+                # Kingside castling
+                if self._can_castle_kingside(board):
+                    moves.append((self.row, self.col + 2))
+                # Queenside castling
+                if self._can_castle_queenside(board):
+                    moves.append((self.row, self.col - 2))
         
         # Filter out moves that would leave king in check
         valid_moves = []
@@ -304,7 +312,70 @@ class King(Piece):
             if board.is_move_safe(self.row, self.col, move[0], move[1], self.color):
                 valid_moves.append(move)
         
+        # Chess960 castling safety is fully verified in _can_castle_960;
+        # is_move_safe cannot simulate the rook relocation (the king may even
+        # land on the rook's starting square)
+        valid_moves.extend(castling_moves)
+        
         return valid_moves
+    
+    def _can_castle_960(self, board, rook_col: int) -> bool:
+        """
+        Check if Chess960 castling with the rook that started on rook_col
+        is possible.
+        
+        Chess960 rules: the king and the castling rook must be unmoved;
+        the king lands on the c-file (queenside) or g-file (kingside) and
+        the rook on the d/f-file, regardless of starting columns. All
+        squares between each piece's start and destination must be empty
+        (except for the king and the castling rook themselves), and the
+        king may not pass through or land on an attacked square.
+        """
+        rook = board.get_piece(self.row, rook_col)
+        if (rook is None or rook.piece_type != 'rook' or
+                rook.color != self.color or rook.has_moved):
+            return False
+        
+        kingside = rook_col > self.col
+        king_dest = 6 if kingside else 2
+        rook_dest = 5 if kingside else 3
+        
+        # King's path (including destination) must be empty except for the
+        # castling rook, which vacates its square
+        king_path = self._path_cols(self.col, king_dest)
+        for col in king_path:
+            occupant = board.get_piece(self.row, col)
+            if occupant is not None and occupant is not rook:
+                return False
+        
+        # King may not pass through an attacked square (destination safety
+        # is verified by simulating the full castling move below)
+        for col in king_path[:-1]:
+            if board.is_square_attacked(self.row, col, self.color):
+                return False
+        
+        # Rook's path (including destination) must be empty except for the
+        # king, which vacates its square
+        for col in self._path_cols(rook_col, rook_dest):
+            occupant = board.get_piece(self.row, col)
+            if occupant is not None and occupant is not self:
+                return False
+        
+        # Simulate the full castling move (king and rook) to verify the
+        # king does not end up in check
+        temp_board = board.copy()
+        temp_king = temp_board.get_piece(self.row, self.col)
+        temp_rook = temp_board.get_piece(self.row, rook_col)
+        temp_board._execute_960_castle(temp_king, temp_rook)
+        return not temp_board.is_in_check(self.color)
+    
+    @staticmethod
+    def _path_cols(start_col: int, dest_col: int) -> List[int]:
+        """Columns from start (exclusive) to destination (inclusive)."""
+        if start_col == dest_col:
+            return []
+        step = 1 if dest_col > start_col else -1
+        return list(range(start_col + step, dest_col + step, step))
     
     def _can_castle_kingside(self, board) -> bool:
         """Check if kingside castling is possible."""

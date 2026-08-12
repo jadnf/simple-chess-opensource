@@ -4,6 +4,7 @@ Author: Sepehr Bayat | Open Source Chess MVP
 Board class for managing the chess board state, moves, and game rules.
 """
 
+import random
 from typing import Optional, Tuple, List
 from copy import deepcopy
 from chess.pieces import Piece, Pawn, Rook, Knight, Bishop, Queen, King
@@ -12,12 +13,20 @@ from chess.pieces import Piece, Pawn, Rook, Knight, Bishop, Queen, King
 class Board:
     """Chess board managing piece placement and game state."""
     
-    def __init__(self):
-        """Initialize an empty board."""
+    def __init__(self, variant: str = 'standard'):
+        """
+        Initialize the board.
+        
+        Args:
+            variant: 'standard' or 'chess960'
+        """
         self.grid: List[List[Optional[Piece]]] = [[None for _ in range(8)] for _ in range(8)]
         self.current_turn = 'white'
         self.move_history: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
         self.en_passant_target: Optional[Tuple[int, int]] = None
+        self.variant = variant
+        self.initial_king_col = 4
+        self.initial_rook_cols: Tuple[int, int] = (0, 7)
         self._initialize_board()
     
     def _initialize_board(self):
@@ -27,31 +36,56 @@ class Board:
             self.grid[6][col] = Pawn('white', 6, col)
             self.grid[1][col] = Pawn('black', 1, col)
         
-        # Place rooks
-        self.grid[7][0] = Rook('white', 7, 0)
-        self.grid[7][7] = Rook('white', 7, 7)
-        self.grid[0][0] = Rook('black', 0, 0)
-        self.grid[0][7] = Rook('black', 0, 7)
+        # Determine back rank piece order
+        if self.variant == 'chess960':
+            back_rank = self._generate_960_back_rank()
+        else:
+            back_rank = [Rook, Knight, Bishop, Queen, King, Bishop, Knight, Rook]
         
-        # Place knights
-        self.grid[7][1] = Knight('white', 7, 1)
-        self.grid[7][6] = Knight('white', 7, 6)
-        self.grid[0][1] = Knight('black', 0, 1)
-        self.grid[0][6] = Knight('black', 0, 6)
+        # Place back rank pieces (black mirrors white)
+        for col, piece_class in enumerate(back_rank):
+            self.grid[7][col] = piece_class('white', 7, col)
+            self.grid[0][col] = piece_class('black', 0, col)
         
-        # Place bishops
-        self.grid[7][2] = Bishop('white', 7, 2)
-        self.grid[7][5] = Bishop('white', 7, 5)
-        self.grid[0][2] = Bishop('black', 0, 2)
-        self.grid[0][5] = Bishop('black', 0, 5)
+        # Record starting king/rook columns (needed for castling logic)
+        self.initial_king_col = next(c for c, cls in enumerate(back_rank) if cls is King)
+        self.initial_rook_cols = tuple(c for c, cls in enumerate(back_rank) if cls is Rook)
+    
+    @staticmethod
+    def _generate_960_back_rank() -> List[type]:
+        """
+        Generate a random legal Chess960 back rank.
         
-        # Place queens
-        self.grid[7][3] = Queen('white', 7, 3)
-        self.grid[0][3] = Queen('black', 0, 3)
+        Rules: bishops on opposite-colored squares, king between the rooks.
         
-        # Place kings
-        self.grid[7][4] = King('white', 7, 4)
-        self.grid[0][4] = King('black', 0, 4)
+        Returns:
+            List of 8 piece classes in column order
+        """
+        placement: List[Optional[type]] = [None] * 8
+        
+        # Bishops on opposite-colored squares
+        placement[random.choice([0, 2, 4, 6])] = Bishop
+        placement[random.choice([1, 3, 5, 7])] = Bishop
+        
+        empty = [c for c in range(8) if placement[c] is None]
+        
+        # Queen on a random remaining square
+        queen_col = random.choice(empty)
+        placement[queen_col] = Queen
+        empty.remove(queen_col)
+        
+        # Knights on two random remaining squares
+        for knight_col in random.sample(empty, 2):
+            placement[knight_col] = Knight
+            empty.remove(knight_col)
+        
+        # Remaining three squares (left to right): rook, king, rook —
+        # this guarantees the king is between the rooks
+        placement[empty[0]] = Rook
+        placement[empty[1]] = King
+        placement[empty[2]] = Rook
+        
+        return placement
     
     def get_piece(self, row: int, col: int) -> Optional[Piece]:
         """Get the piece at the given position."""
@@ -98,19 +132,31 @@ class Board:
                 self.grid[end_row - direction][end_col] = None
         
         # Handle castling
-        if piece.piece_type == 'king' and abs(end_col - start_col) == 2:
-            if end_col > start_col:  # Kingside
-                rook = self.get_piece(start_row, 7)
-                self.grid[start_row][7] = None
-                self.grid[start_row][5] = rook
-                if rook:
-                    rook.set_position(start_row, 5)
-            else:  # Queenside
-                rook = self.get_piece(start_row, 0)
-                self.grid[start_row][0] = None
-                self.grid[start_row][3] = rook
-                if rook:
-                    rook.set_position(start_row, 3)
+        if piece.piece_type == 'king':
+            if self.variant == 'chess960':
+                # Chess960 castling is represented as the king moving onto
+                # its own rook's square
+                target = self.get_piece(end_row, end_col)
+                if (target is not None and target.piece_type == 'rook' and
+                        target.color == piece.color):
+                    self._execute_960_castle(piece, target)
+                    self.en_passant_target = None
+                    self.move_history.append((start, end))
+                    self.current_turn = 'black' if self.current_turn == 'white' else 'white'
+                    return True
+            elif abs(end_col - start_col) == 2:
+                if end_col > start_col:  # Kingside
+                    rook = self.get_piece(start_row, 7)
+                    self.grid[start_row][7] = None
+                    self.grid[start_row][5] = rook
+                    if rook:
+                        rook.set_position(start_row, 5)
+                else:  # Queenside
+                    rook = self.get_piece(start_row, 0)
+                    self.grid[start_row][0] = None
+                    self.grid[start_row][3] = rook
+                    if rook:
+                        rook.set_position(start_row, 3)
         
         # Update en passant target
         self.en_passant_target = None
@@ -134,6 +180,30 @@ class Board:
         self.current_turn = 'black' if self.current_turn == 'white' else 'white'
         
         return True
+    
+    def _execute_960_castle(self, king: Piece, rook: Piece):
+        """
+        Execute a Chess960 castling move: king lands on the c/g-file and the
+        rook on the d/f-file, regardless of their starting columns.
+        
+        Args:
+            king: The castling king
+            rook: The rook the king is castling with
+        """
+        row = king.row
+        kingside = rook.col > king.col
+        king_dest = 6 if kingside else 2
+        rook_dest = 5 if kingside else 3
+        
+        # Clear both origin squares first: either destination may overlap
+        # the other piece's starting square
+        self.grid[king.row][king.col] = None
+        self.grid[rook.row][rook.col] = None
+        
+        self.grid[row][king_dest] = king
+        king.set_position(row, king_dest)
+        self.grid[row][rook_dest] = rook
+        rook.set_position(row, rook_dest)
     
     def is_move_safe(self, start_row: int, start_col: int, 
                      end_row: int, end_col: int, color: str) -> bool:
@@ -363,6 +433,9 @@ class Board:
         new_board.current_turn = self.current_turn
         new_board.move_history = self.move_history.copy()
         new_board.en_passant_target = self.en_passant_target
+        new_board.variant = self.variant
+        new_board.initial_king_col = self.initial_king_col
+        new_board.initial_rook_cols = self.initial_rook_cols
         
         return new_board
 

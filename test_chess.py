@@ -134,6 +134,185 @@ def test_evaluator():
         traceback.print_exc()
         return False
 
+def _make_custom_960_board(rook_cols, king_col):
+    """Create an empty Chess960 board for placing custom test positions."""
+    from chess.board import Board
+    board = Board(variant='chess960')
+    board.grid = [[None for _ in range(8)] for _ in range(8)]
+    board.initial_rook_cols = rook_cols
+    board.initial_king_col = king_col
+    return board
+
+def test_chess960_setup():
+    """Test that Chess960 boards are generated legally."""
+    print("\nTesting Chess960 setup...")
+    try:
+        from chess.board import Board
+        
+        for _ in range(20):
+            board = Board(variant='chess960')
+            
+            # Back rank has the right pieces
+            white_types = sorted(board.get_piece(7, c).piece_type for c in range(8))
+            assert white_types == sorted(['rook', 'knight', 'bishop', 'queen',
+                                          'king', 'bishop', 'knight', 'rook']), \
+                f"Wrong back rank pieces: {white_types}"
+            
+            # Black mirrors white
+            for c in range(8):
+                assert board.get_piece(0, c).piece_type == board.get_piece(7, c).piece_type, \
+                    "Black back rank should mirror white"
+            
+            # Pawns in place
+            for c in range(8):
+                assert board.get_piece(6, c).piece_type == 'pawn', "White pawns missing"
+                assert board.get_piece(1, c).piece_type == 'pawn', "Black pawns missing"
+            
+            # Bishops on opposite-colored squares
+            bishop_cols = [c for c in range(8)
+                           if board.get_piece(7, c).piece_type == 'bishop']
+            assert bishop_cols[0] % 2 != bishop_cols[1] % 2, \
+                f"Bishops on same-colored squares: {bishop_cols}"
+            
+            # King between the rooks
+            king_col = next(c for c in range(8)
+                            if board.get_piece(7, c).piece_type == 'king')
+            rook_cols = [c for c in range(8)
+                         if board.get_piece(7, c).piece_type == 'rook']
+            assert rook_cols[0] < king_col < rook_cols[1], \
+                f"King (col {king_col}) not between rooks {rook_cols}"
+            
+            # Recorded columns match the actual placement
+            assert board.initial_king_col == king_col
+            assert list(board.initial_rook_cols) == rook_cols
+        
+        print("[OK] Chess960 setup is legal (20 random positions)")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Chess960 setup error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_chess960_castling():
+    """Test Chess960 castling legality and execution."""
+    print("\nTesting Chess960 castling...")
+    try:
+        from chess.pieces import Rook, King, Bishop
+        
+        # King on b1, rooks on a1 and h1
+        board = _make_custom_960_board(rook_cols=(0, 7), king_col=1)
+        king = King('white', 7, 1)
+        rook_a = Rook('white', 7, 0)
+        rook_h = Rook('white', 7, 7)
+        board.grid[7][1] = king
+        board.grid[7][0] = rook_a
+        board.grid[7][7] = rook_h
+        board.grid[0][4] = King('black', 0, 4)
+        
+        moves = king.get_valid_moves(board)
+        assert (7, 0) in moves, "Queenside castling (king onto a1 rook) should be legal"
+        assert (7, 7) in moves, "Kingside castling (king onto h1 rook) should be legal"
+        
+        # Execute queenside: king b1 -> c1, rook a1 -> d1
+        assert board.make_move((7, 1), (7, 0)), "Queenside castle should execute"
+        assert board.get_piece(7, 2) is king, "King should land on c1"
+        assert board.get_piece(7, 3) is rook_a, "Rook should land on d1"
+        assert board.get_piece(7, 0) is None and board.get_piece(7, 1) is None
+        print("[OK] Queenside castling: king b1->c1, rook a1->d1")
+        
+        # Execute kingside on a fresh board: king b1 -> g1, rook h1 -> f1
+        board = _make_custom_960_board(rook_cols=(0, 7), king_col=1)
+        king = King('white', 7, 1)
+        rook_h = Rook('white', 7, 7)
+        board.grid[7][1] = king
+        board.grid[7][0] = Rook('white', 7, 0)
+        board.grid[7][7] = rook_h
+        board.grid[0][4] = King('black', 0, 4)
+        
+        assert board.make_move((7, 1), (7, 7)), "Kingside castle should execute"
+        assert board.get_piece(7, 6) is king, "King should land on g1"
+        assert board.get_piece(7, 5) is rook_h, "Rook should land on f1"
+        print("[OK] Kingside castling: king b1->g1, rook h1->f1")
+        
+        # Overlap case: king d1, rook c1 - castling queenside swaps them
+        board = _make_custom_960_board(rook_cols=(2, 7), king_col=3)
+        king = King('white', 7, 3)
+        rook_c = Rook('white', 7, 2)
+        board.grid[7][3] = king
+        board.grid[7][2] = rook_c
+        board.grid[7][7] = Rook('white', 7, 7)
+        board.grid[0][4] = King('black', 0, 4)
+        
+        moves = king.get_valid_moves(board)
+        assert (7, 2) in moves, "Queenside castling with adjacent rook should be legal"
+        assert board.make_move((7, 3), (7, 2)), "Adjacent-rook castle should execute"
+        assert board.get_piece(7, 2) is king, "King should land on c1"
+        assert board.get_piece(7, 3) is rook_c, "Rook should land on d1"
+        print("[OK] Adjacent king/rook swap: king d1->c1, rook c1->d1")
+        
+        # Blocked path: bishop on e1 blocks kingside castling for king on b1
+        board = _make_custom_960_board(rook_cols=(0, 7), king_col=1)
+        king = King('white', 7, 1)
+        board.grid[7][1] = king
+        board.grid[7][0] = Rook('white', 7, 0)
+        board.grid[7][7] = Rook('white', 7, 7)
+        board.grid[7][4] = Bishop('white', 7, 4)
+        board.grid[0][4] = King('black', 0, 4)
+        
+        moves = king.get_valid_moves(board)
+        assert (7, 7) not in moves, "Kingside castling should be blocked by bishop on e1"
+        assert (7, 0) in moves, "Queenside castling should still be legal"
+        print("[OK] Blocked castling path rejected")
+        
+        # Castling into check: enemy rook on c8 attacks c1
+        board = _make_custom_960_board(rook_cols=(0, 7), king_col=1)
+        king = King('white', 7, 1)
+        board.grid[7][1] = king
+        board.grid[7][0] = Rook('white', 7, 0)
+        board.grid[7][7] = Rook('white', 7, 7)
+        board.grid[0][2] = Rook('black', 0, 2)
+        board.grid[0][4] = King('black', 0, 4)
+        
+        moves = king.get_valid_moves(board)
+        assert (7, 0) not in moves, "Castling into check (c1 attacked) should be illegal"
+        print("[OK] Castling into check rejected")
+        
+        return True
+    except Exception as e:
+        print(f"[ERROR] Chess960 castling error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_standard_castling_unchanged():
+    """Test that standard castling still works after the Chess960 changes."""
+    print("\nTesting standard castling...")
+    try:
+        from chess.board import Board
+        
+        board = Board()
+        # Clear f1 and g1 so white can castle kingside
+        board.grid[7][5] = None
+        board.grid[7][6] = None
+        
+        king = board.get_piece(7, 4)
+        moves = king.get_valid_moves(board)
+        assert (7, 6) in moves, "Standard kingside castling should be legal"
+        
+        assert board.make_move((7, 4), (7, 6)), "Standard castle should execute"
+        assert board.get_piece(7, 6).piece_type == 'king', "King should be on g1"
+        assert board.get_piece(7, 5).piece_type == 'rook', "Rook should be on f1"
+        assert board.get_piece(7, 7) is None, "h1 should be empty"
+        
+        print("[OK] Standard castling works")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Standard castling error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def main():
     """Run all tests."""
     print("=" * 50)
@@ -146,6 +325,9 @@ def main():
         test_piece_moves,
         test_move_execution,
         test_evaluator,
+        test_chess960_setup,
+        test_chess960_castling,
+        test_standard_castling_unchanged,
     ]
     
     passed = 0

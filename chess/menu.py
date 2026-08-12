@@ -12,27 +12,38 @@ from chess.constants import (
 
 
 class GameMenu:
-    """Menu for selecting game mode."""
+    """Menu for selecting between a list of options (game mode, variant, etc.)."""
     
-    def __init__(self, screen: pygame.Surface):
+    def __init__(self, screen: pygame.Surface, title: str = "Chess MVP",
+                 subtitle: str = "Select Game Mode",
+                 options: Optional[List[Tuple[str, str]]] = None):
         """
         Initialize the menu.
         
         Args:
             screen: Pygame surface to draw on
+            title: Large title text
+            subtitle: Smaller subtitle text
+            options: List of (label, value) options; defaults to game mode options
         """
         self.screen = screen
         self.font_large = pygame.font.Font(None, 48)
         self.font_medium = pygame.font.Font(None, 32)
         self.font_small = pygame.font.Font(None, 24)
         
-        # Game mode options
-        self.modes = [
-            ("User vs User", "user_vs_user"),
-            ("User vs AI (White)", "user_vs_ai_white"),
-            ("User vs AI (Black)", "user_vs_ai_black"),
-            ("AI vs AI", "ai_vs_ai")
-        ]
+        self.title = title
+        self.subtitle = subtitle
+        
+        # Menu options (default: game mode selection)
+        if options is not None:
+            self.modes = options
+        else:
+            self.modes = [
+                ("User vs User", "user_vs_user"),
+                ("User vs AI (White)", "user_vs_ai_white"),
+                ("User vs AI (Black)", "user_vs_ai_black"),
+                ("AI vs AI", "ai_vs_ai")
+            ]
         
         self.selected_mode: Optional[str] = None
         self.button_rects: List[Tuple[pygame.Rect, str]] = []
@@ -42,12 +53,12 @@ class GameMenu:
         self.screen.fill(UI_BACKGROUND)
         
         # Title
-        title = self.font_large.render("Chess MVP", True, UI_TEXT)
+        title = self.font_large.render(self.title, True, UI_TEXT)
         title_rect = title.get_rect(center=(WINDOW_WIDTH // 2, 100))
         self.screen.blit(title, title_rect)
         
         # Subtitle
-        subtitle = self.font_small.render("Select Game Mode", True, UI_TEXT)
+        subtitle = self.font_small.render(self.subtitle, True, UI_TEXT)
         subtitle_rect = subtitle.get_rect(center=(WINDOW_WIDTH // 2, 150))
         self.screen.blit(subtitle, subtitle_rect)
         
@@ -75,7 +86,7 @@ class GameMenu:
         
         # Instructions
         instructions = [
-            "Click on a game mode to start",
+            "Click an option to select",
             "Press ESC to exit"
         ]
         inst_y = button_y + len(self.modes) * (button_height + button_spacing) + 40

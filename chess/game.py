@@ -46,6 +46,7 @@ class Game:
         
         # Game mode
         self.game_mode: Optional[str] = None
+        self.variant: str = "standard"
         self.ai_white: Optional[ChessAI] = None
         self.ai_black: Optional[ChessAI] = None
         self.ai_thinking = False
@@ -55,19 +56,35 @@ class Game:
     
     def show_menu(self) -> bool:
         """
-        Show the game mode selection menu.
+        Show the game mode selection menu, then the variant selection menu.
         
         Returns:
-            True if a mode was selected, False if closed
+            True if a mode and variant were selected, False if closed
         """
         menu = GameMenu(self.screen)
         selected_mode = menu.run()
         
-        if selected_mode:
-            self.game_mode = selected_mode
-            self._setup_game_mode()
-            return True
-        return False
+        if not selected_mode:
+            return False
+        
+        variant_menu = GameMenu(
+            self.screen,
+            subtitle="Select Chess Variant",
+            options=[
+                ("Standard Chess", "standard"),
+                ("Chess960 / Fischer Random", "chess960")
+            ]
+        )
+        selected_variant = variant_menu.run()
+        
+        if not selected_variant:
+            return False
+        
+        self.game_mode = selected_mode
+        self.variant = selected_variant
+        self.board = Board(variant=selected_variant)
+        self._setup_game_mode()
+        return True
     
     def _setup_game_mode(self):
         """Set up AI players based on selected game mode."""
@@ -304,6 +321,12 @@ class Game:
             mode_surface = self.font_small.render(f"Mode: {mode_text}", True, UI_TEXT)
             self.screen.blit(mode_surface, (panel_x + 10, y_offset))
             y_offset += 30
+        
+        # Chess variant
+        variant_text = "Chess960" if self.variant == "chess960" else "Standard"
+        variant_surface = self.font_small.render(f"Variant: {variant_text}", True, UI_TEXT)
+        self.screen.blit(variant_surface, (panel_x + 10, y_offset))
+        y_offset += 30
         
         # Current turn
         turn_text = f"Turn: {self.board.current_turn.capitalize()}"

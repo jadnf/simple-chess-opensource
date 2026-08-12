@@ -38,17 +38,17 @@ class Evaluator:
         if piece is None:
             return 50  # Neutral score if invalid
         
-        # Make the move on temp board
+        # A friendly piece on the destination means Chess960 castling
+        # (king onto its own rook), not a capture
         captured_piece = temp_board.get_piece(end_row, end_col)
-        temp_board.grid[start_row][start_col] = None
-        temp_board.grid[end_row][end_col] = piece
-        piece.set_position(end_row, end_col)
+        if captured_piece is not None and captured_piece.color == piece.color:
+            captured_piece = None
         
-        # Handle pawn promotion
-        if piece.piece_type == 'pawn' and (end_row == 0 or end_row == 7):
-            temp_board.grid[end_row][end_col] = None
-            from chess.pieces import Queen
-            temp_board.grid[end_row][end_col] = Queen(piece.color, end_row, end_col)
+        # Make the move using the real move logic so castling (including
+        # the rook relocation), en passant, and promotion are all applied
+        temp_board.current_turn = piece.color
+        if not temp_board.make_move(start, end):
+            return 50  # Neutral score if invalid
         
         # Calculate base position evaluation
         position_score = self.evaluate_position(temp_board, color)
